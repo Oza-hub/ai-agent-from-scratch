@@ -94,7 +94,7 @@ def evaluate_step(messages, tool_cache):
 # ===== EVALUACIÓN =====
 def evaluate_plan_result(result):
 
-    if not result.get("success"):
+    if result.get("status") != "success":
         return {
             "quality": "bad",
             "metrics": {
@@ -111,8 +111,13 @@ def evaluate_plan_result(result):
     tool_calls = metrics.get("tool_calls", 0)
     tool_errors = metrics.get("tool_errors", 0)
 
-    success_rate = (tool_calls - tool_errors) / tool_calls if tool_calls else 1.0
+    # ===== SUCCESS RATE =====
+    if tool_calls > 0:
+        success_rate = (tool_calls - tool_errors) / tool_calls
+    else:
+        success_rate = 1.0
 
+    # ===== COMPLETENESS =====
     total_items = 0
     valid_items = 0
 
@@ -120,11 +125,17 @@ def evaluate_plan_result(result):
         if isinstance(section, dict):
             for v in section.values():
                 total_items += 1
+
+                # ignorar errores explícitos
+                if isinstance(v, dict) and "error" in v:
+                    continue
+
                 if v is not None:
                     valid_items += 1
 
     completeness = (valid_items / total_items) if total_items else 1.0
 
+    # ===== QUALITY =====
     if success_rate == 1.0 and completeness == 1.0:
         quality = "good"
     elif success_rate > 0.5:
@@ -160,7 +171,6 @@ class TravelAgent:
         goal = detect_goal(normalized_input)
         plan = create_plan(goal, normalized_input)
 
-        # ===== CONTROL DE FALLBACK =====
         if not plan:
             return "No se pudo interpretar correctamente la solicitud. Intenta usar regiones como: Europa, Asia o Sudamérica."
 
@@ -173,8 +183,9 @@ class TravelAgent:
 
         result = execute_plan(plan)
 
-        if not result.get("success"):
-            return result.get("error", "Error ejecutando el plan")
+        # FIX PRINCIPAL
+        if result["status"] == "error":
+            return "Error ejecutando el plan"
 
         data = result["data"]
 
@@ -183,12 +194,11 @@ class TravelAgent:
         quality = evaluation["quality"]
         eval_metrics = evaluation["metrics"]
 
-        # ===== ADAPTIVE PLANNING =====
+        # ===== ADAPTIVE =====
         if quality == "bad":
 
             print("[ADAPTIVE] Bad result detected → attempting recovery...")
 
-            # ===== RETRY =====
             retry_improved = False
 
             if eval_metrics["tool_errors"] > 0:
@@ -197,7 +207,7 @@ class TravelAgent:
 
                 retry_result = execute_plan(plan)
 
-                if retry_result.get("success"):
+                if retry_result["status"] == "success":
 
                     retry_eval = evaluate_plan_result(retry_result)
 
@@ -210,13 +220,7 @@ class TravelAgent:
                         eval_metrics = retry_eval["metrics"]
 
                         retry_improved = True
-                    else:
-                        print("[ADAPTIVE] Retry did not improve quality")
 
-                else:
-                    print("[ADAPTIVE] Retry failed completely")
-
-            # ===== REPLAN SOLO SI SIGUE MAL =====
             if quality == "bad" and not retry_improved:
 
                 print("[ADAPTIVE] Replanning → simplifying output")
@@ -233,48 +237,28 @@ class TravelAgent:
                     data = simplified_data
                     quality = "partial"
 
-        # ===== CORRECTIVE =====
-        if quality == "bad":
-
-            has_weather = "weather" in data and any(
-                v is not None for v in data.get("weather", {}).values()
-            )
-
-            has_info = "info" in data and any(
-                isinstance(v, dict) for v in data.get("info", {}).values()
-            )
-
-            if has_weather and not has_info:
-                data.pop("info", None)
-                quality = "partial"
-
-            elif has_info and not has_weather:
-                data.pop("weather", None)
-                quality = "partial"
-
-        # ===== FILTRO =====
-        if ("ignora" in text or "solo" in text or "filtra" in text):
-            if "info" in data and "weather" in data:
-
-                filtered_weather = {}
-                filtered_info = {}
-
-                for dest in data["weather"]:
-                    info = data["info"].get(dest)
-
-                    if isinstance(info, dict):
-                        filtered_weather[dest] = data["weather"][dest]
-                        filtered_info[dest] = info
-
-                data["weather"] = filtered_weather
-                data["info"] = filtered_info
-
-        # ===== RESPUESTA =====
+        # ===== RESPONSE =====
         response_lines = []
+
+        # ===== DESTINATIONS =====
+        if "destinations" in data and data["destinations"]:
+            response_lines.append("Destinos disponibles:")
+            for d in data["destinations"]:
+
+                if isinstance(d, dict):
+                    response_lines.append(f"- {d['name']} ({d['city']})")
+                else:
+                    response_lines.append(f"- {d}")
 
         if "weather" in data and data["weather"]:
             response_lines.append("Clima por destino:")
             for dest, weather in data["weather"].items():
+
+                #Ocultar errores tecnicos
+                if isinstance(weather, dict) and "error" in weather:
+                    response_lines.append(f"{dest}: no disponible")
+                    continue
+                
                 response_lines.append(f"{dest}: {weather}")
 
         if "info" in data and data["info"]:
@@ -290,31 +274,12 @@ class TravelAgent:
                     else:
                         response_lines.append(f"{dest}: {info}")
 
-        # ===== DESTINATIONS (fallback útil) =====
         if not response_lines:
-            for key, value in result.get("data", {}).items():
-                if isinstance(value, dict) and "destinations" in value:
-                    destinations = value["destinations"]
-                    if destinations:
-                        response_lines.append("Destinos disponibles:")
-                        for d in destinations:
-                            response_lines.append(f"- {d}")
-
-        # ===== FINAL TEXT =====
-        if quality == "bad":
-            if response_lines:
-                final_text = "\n".join(response_lines) + "\n\n(No se pudo completar toda la información)"
-            else:
-                final_text = "No hay datos suficientes para responder correctamente."
-
+            final_text = "No hay datos disponibles."
         elif quality == "partial":
-            if response_lines:
-                final_text = "\n".join(response_lines) + "\n\n(Algunos datos no estaban disponibles)"
-            else:
-                final_text = "Se obtuvo información parcial, pero no fue suficiente para construir una respuesta completa."
-
+            final_text = "\n".join(response_lines) + "\n\n(Algunos datos no estaban disponibles)"
         else:
-            final_text = "\n".join(response_lines) if response_lines else "No hay datos disponibles."
+            final_text = "\n".join(response_lines)
 
         # ===== OBSERVABILITY =====
         latency = round(time.time() - start_time, 3)

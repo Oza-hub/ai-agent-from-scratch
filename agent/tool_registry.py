@@ -1,6 +1,7 @@
 from tools.weather import get_weather
 from tools.destinations import get_destinations
 from tools.storage import save_to_file
+from tools.destination_info import get_destination_info
 
 tool_registry = {
     "get_destinations": {
@@ -20,5 +21,8 @@ tool_registry = {
             "filename": "string(optional)"
         },
         "source": "local"
-    }
+    },
+    "get_destination_info": {
+        "function": get_destination_info
+}
 }

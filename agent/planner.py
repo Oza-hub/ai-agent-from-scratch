@@ -34,6 +34,9 @@ def extract_regions(user_input: str):
     if "asia" in words:
         regions.append("asia")
 
+    if "africa" in words or "áfrica" in words:
+        regions.append("africa")
+
     if "europa" in words or "europe" in words:
         regions.append("europe")
 
@@ -101,7 +104,8 @@ def execute_plan(plan):
 
     metrics = {
         "tool_calls": 0,
-        "tool_errors": 0
+        "tool_errors": 0,
+        "error_types": []
     }
 
     for step in plan:
@@ -113,17 +117,19 @@ def execute_plan(plan):
 
             result = execute_tool(step["tool"], step["args"])
 
-            if not result.get("success"):
+            if result["status"] == "error":
+
                 metrics["tool_errors"] += 1
+                metrics["error_types"].append(result["error"]["type"])
+
                 return {
-                    "success": False,
-                    "error": result.get("error", "tool_failed"),
+                    "status": "error",
+                    "error": result["error"],
                     "metrics": metrics
                 }
 
             data = result.get("data")
 
-            # 🔹 Simplificación SOLO para map posterior
             if step["tool"] == "get_destinations":
                 data = data.get("destinations", [])
 
@@ -136,8 +142,12 @@ def execute_plan(plan):
 
             if not isinstance(input_data, list):
                 return {
-                    "success": False,
-                    "error": f"invalid_map_input: {step['input']}",
+                    "status": "error",
+                    "error": {
+                        "type": "invalid_map_input",
+                        "message": step["input"],
+                        "retryable": False
+                    },
                     "metrics": metrics
                 }
 
@@ -145,8 +155,16 @@ def execute_plan(plan):
 
             for item in input_data:
 
+                # FIX 1: obtener ciudad correctamente
+                if isinstance(item, dict) and "city" in item:
+                    destination_value = item["city"]
+                    key = item.get("name") or item["city"]
+                else:
+                    destination_value = item
+                    key = item
+
                 args = {
-                    k: (item if v == "item" else v)
+                    k: (destination_value if v == "item" else v)
                     for k, v in step["arg_map"].items()
                 }
 
@@ -154,26 +172,42 @@ def execute_plan(plan):
 
                 result = execute_tool(step["tool"], args)
 
-                if result.get("success"):
+                if result["status"] == "success":
 
                     data = result.get("data")
 
-                    # 🔹 Normalización de salida
-                    if isinstance(data, dict) and "weather" in data:
-                        output[item] = data["weather"]
+                    if isinstance(data, dict):
+
+                        if "weather" in data:
+                            output[key] = data["weather"]
+
+                        elif "info" in data:
+                            output[key] = data["info"]
+
+                        else:
+                            output[key] = data
+
                     else:
-                        output[item] = data
+                        output[key] = data
 
                 else:
                     metrics["tool_errors"] += 1
-                    output[item] = None
+                    metrics["error_types"].append(result["error"]["type"])
+
+                    output[key] = {
+                        "error": result["error"]
+                    }
 
             context[step["save_as"]] = output
 
         else:
             return {
-                "success": False,
-                "error": f"unknown_step_type: {step['type']}",
+                "status": "error",
+                "error": {
+                    "type": "unknown_step_type",
+                    "message": step["type"],
+                    "retryable": False
+                },
                 "metrics": metrics
             }
 
@@ -205,7 +239,7 @@ def execute_plan(plan):
         final_data["info"] = final_info
 
     return {
-        "success": True,
+        "status": "success",
         "data": final_data,
         "metrics": metrics
     }
