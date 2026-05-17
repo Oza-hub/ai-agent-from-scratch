@@ -1,49 +1,48 @@
+from services.info_service import get_info_service
+from core.entity_resolver import resolve_destination
+
+
 def get_destination_info(destination: str):
+    
+    print("=== DEBUG DESTINATION INFO ===")
+    print("INPUT:", destination)
 
-    data = {
-        "bogota": {
-            "country": "Colombia",
-            "language": "Spanish",
-            "description": "Capital city, cultural and historical center"
-        },
-        "rio de janeiro": {
-            "country": "Brazil",
-            "language": "Portuguese",
-            "description": "Famous for beaches and carnival"
-        },
-        "paris": {
-            "country": "France",
-            "language": "French",
-            "description": "City of lights, art and culture"
-        },
-        "barcelona": {
-            "country": "Spain",
-            "language": "Spanish",
-            "description": "Famous for architecture and beaches"
-        },
+    resolved = resolve_destination(destination)
 
-        "berlin": {
-             "country": "Germany",
-            "language": "German",
-            "description": "Capital of Germany, rich in history"
-}
+    print("RESOLVED:", resolved)
+
+    # ===== MAPA A ESPAÑOL (CLAVE) =====
+    translation_map = {
+        "Tokyo": "Tokio",
+        "Paris": "Paris",
+        "Rio de Janeiro": "Rio de Janeiro",
+        "Berlin": "Berlin",
+        "Bogotá": "Bogotá"
     }
 
-    if not destination:
-        return {
-            "success": False,
-            "error": "missing destination"
-        }
+    resolved_es = translation_map.get(resolved, resolved)
 
-    destination = destination.lower().strip()
+    print("RESOLVED_ES:", resolved_es)
 
-    if destination not in data:
-        return {
-            "success": False,
-            "error": f"unknown destination '{destination}'"
-        }
+    # ===== INTENTO BASE =====
+    result = get_info_service(resolved_es)
 
-    return {
-        "success": True,
-        "data": data[destination]
-    }
+    if result.get("status") == "success":
+        return result
+
+    error = result.get("error", {})
+
+    # ===== RETRY DESAMBIGUACIÓN =====
+    if error.get("type") == "AMBIGUOUS_RESULT":
+
+        print("[RETRY] estrategia wikipedia (ciudad)")
+
+        refined = f"{resolved_es} (ciudad)"
+        print("TRY:", refined)
+
+        retry_result = get_info_service(refined)
+
+        if retry_result.get("status") == "success":
+            return retry_result
+
+    return result
