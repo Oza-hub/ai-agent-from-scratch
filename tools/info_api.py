@@ -7,15 +7,15 @@ def get_info_from_api(destination: str):
     print(f"[INFO API] fetching info for: {destination}")
 
     try:
-        # FIX: encoding obligatorio
+        # ===== ENCODING =====
         encoded = urllib.parse.quote(destination)
 
         url = f"https://es.wikipedia.org/api/rest_v1/page/summary/{encoded}"
 
         headers = {
-                "User-Agent": "AI-Agent/1.0 (learning project)",
-                "Accept": "application/json"
-            }
+            "User-Agent": "AI-Agent/1.0 (learning project)",
+            "Accept": "application/json"
+        }
 
         response = requests.get(url, headers=headers, timeout=5)
 
@@ -31,10 +31,10 @@ def get_info_from_api(destination: str):
 
         data = response.json()
 
-        extract = data.get("extract")
+        extract = data.get("extract", "").strip()
 
-        # VALIDACIÓN REAL
-        if not extract or len(extract.strip()) == 0:
+        # ===== VALIDACIÓN: CONTENIDO VACÍO =====
+        if not extract:
             return {
                 "status": "error",
                 "error": {
@@ -44,6 +44,28 @@ def get_info_from_api(destination: str):
                 }
             }
 
+        # ===== FILTRO DE DESAMBIGUACIÓN (CLAVE) =====
+        bad_patterns = [
+            "puede referirse a",
+            "puede significar",
+            "puede hacer referencia a",
+            "en la mitología",
+            "puede ser"
+        ]
+
+        extract_lower = extract.lower()
+
+        if any(p in extract_lower for p in bad_patterns):
+            return {
+                "status": "error",
+                "error": {
+                    "type": "AMBIGUOUS_RESULT",
+                    "message": "ambiguous wikipedia result",
+                    "retryable": True
+                }
+            }
+
+        # ===== RESPUESTA EXITOSA =====
         return {
             "status": "success",
             "data": {
@@ -55,6 +77,7 @@ def get_info_from_api(destination: str):
             }
         }
 
+    # ===== ERRORES DE RED =====
     except requests.exceptions.Timeout:
         return {
             "status": "error",

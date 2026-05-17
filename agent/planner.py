@@ -1,16 +1,28 @@
-import json
 from agent.tool_executor import execute_tool
 
+from core.normalizer import (
+    normalize_destination,
+    normalize_destinations_list,
+    normalize_region
+)
 
-# ===== GOAL DETECTION =====
+
+# =========================================================
+# GOAL DETECTION
+# =========================================================
 def detect_goal(user_input: str):
 
     text = user_input.lower()
 
     has_destinations = "destino" in text or "destinos" in text
     has_weather = "clima" in text or "temperatura" in text
-    has_info = "info" in text or "informacion" in text or "información" in text
+    has_info = (
+        "info" in text
+        or "informacion" in text
+        or "información" in text
+    )
 
+    # ===== PRIORIDAD MULTI =====
     if has_destinations and has_weather and has_info:
         return "multi_destination_full"
 
@@ -20,45 +32,112 @@ def detect_goal(user_input: str):
     if has_destinations and has_info:
         return "multi_destination_info"
 
+    # ===== SINGLE =====
+    if has_weather:
+        return "single_destination_weather"
+
+    if has_info:
+        return "single_destination_info"
+
+    if has_destinations:
+        return "multi_destination"
+
     return "simple"
 
 
-# ===== REGION EXTRACTION =====
+# =========================================================
+# REGION EXTRACTION
+# =========================================================
 def extract_regions(user_input: str):
 
     text = user_input.lower()
-    words = set(text.split())
+
+    possible_regions = [
+        "asia",
+        "africa",
+        "europa",
+        "europe",
+        "america",
+        "américa",
+        "latam",
+        "sudamerica",
+        "suramerica",
+        "south america"
+    ]
 
     regions = []
 
-    if "asia" in words:
-        regions.append("asia")
+    for item in possible_regions:
 
-    if "africa" in words or "áfrica" in words:
-        regions.append("africa")
+        if item in text:
 
-    if "europa" in words or "europe" in words:
-        regions.append("europe")
+            normalized = normalize_region(item)
 
-    if (
-        "america" in words
-        or "américa" in words
-        or "latam" in words
-        or "sudamerica" in words
-        or "suramerica" in words
-        or "south america" in text
-    ):
-        regions.append("south america")
+            if normalized not in regions:
+                regions.append(normalized)
 
     return regions
 
 
-# ===== PLAN CREATION =====
+# =========================================================
+# PLAN CREATION
+# =========================================================
 def create_plan(goal: str, user_input: str):
 
     regions = extract_regions(user_input)
+
     print("[DEBUG] regions detected:", regions)
 
+    text = user_input.lower()
+
+    # =====================================================
+    # SINGLE DESTINATION
+    # =====================================================
+    if goal in [
+        "single_destination_weather",
+        "single_destination_info"
+    ]:
+
+        words = text.split()
+
+        city = words[-1] if words else None
+
+        if not city:
+            return None
+
+        city_entity = normalize_destination(city)
+
+        plan = []
+
+        # ===== WEATHER =====
+        if goal == "single_destination_weather":
+
+            plan.append({
+                "type": "tool",
+                "tool": "get_weather",
+                "args": {
+                    "destination": city_entity["city"]
+                },
+                "save_as": "weather_single"
+            })
+
+        # ===== INFO =====
+        elif goal == "single_destination_info":
+
+            plan.append({
+                "type": "tool",
+                "tool": "get_destination_info",
+                "args": {
+                    "destination": city_entity["city"]
+                },
+                "save_as": "info_single"
+            })
+
+        return plan
+
+    # =====================================================
+    # MULTI DESTINATION
+    # =====================================================
     if not regions:
         return None
 
@@ -70,34 +149,50 @@ def create_plan(goal: str, user_input: str):
         plan.append({
             "type": "tool",
             "tool": "get_destinations",
-            "args": {"region": region},
+            "args": {
+                "region": region
+            },
             "save_as": f"destinations_{region}"
         })
 
         # ===== WEATHER =====
-        if goal in ["multi_destination_weather", "multi_destination_full"]:
+        if goal in [
+            "multi_destination_weather",
+            "multi_destination_full"
+        ]:
+
             plan.append({
                 "type": "map",
                 "input": f"destinations_{region}",
                 "tool": "get_weather",
-                "arg_map": {"destination": "item"},
+                "arg_map": {
+                    "destination": "item"
+                },
                 "save_as": f"weather_{region}"
             })
 
         # ===== INFO =====
-        if goal in ["multi_destination_info", "multi_destination_full"]:
+        if goal in [
+            "multi_destination_info",
+            "multi_destination_full"
+        ]:
+
             plan.append({
                 "type": "map",
                 "input": f"destinations_{region}",
                 "tool": "get_destination_info",
-                "arg_map": {"destination": "item"},
+                "arg_map": {
+                    "destination": "item"
+                },
                 "save_as": f"info_{region}"
             })
 
     return plan
 
 
-# ===== PLAN EXECUTION =====
+# =========================================================
+# PLAN EXECUTION
+# =========================================================
 def execute_plan(plan):
 
     context = {}
@@ -110,37 +205,64 @@ def execute_plan(plan):
 
     for step in plan:
 
-        # ===== TOOL STEP =====
+        # =================================================
+        # TOOL STEP
+        # =================================================
         if step["type"] == "tool":
 
             metrics["tool_calls"] += 1
 
-            result = execute_tool(step["tool"], step["args"])
+            result = execute_tool(
+                step["tool"],
+                step["args"]
+            )
 
+            # ===== ERROR =====
             if result["status"] == "error":
 
                 metrics["tool_errors"] += 1
-                metrics["error_types"].append(result["error"]["type"])
 
-                return {
-                    "status": "error",
-                    "error": result["error"],
-                    "metrics": metrics
-                }
+                metrics["error_types"].append(
+                    result["error"]["type"]
+                )
+
+                continue
 
             data = result.get("data")
 
-            if step["tool"] == "get_destinations":
-                data = data.get("destinations", [])
+            # ===== NORMALIZE DESTINATIONS =====
+            if (
+                isinstance(data, dict)
+                and "destinations" in data
+            ):
 
-            context[step["save_as"]] = data
+                normalized = normalize_destinations_list(
+                    data["destinations"]
+                )
 
-        # ===== MAP STEP =====
+                context[step["save_as"]] = normalized
+
+            else:
+                context[step["save_as"]] = data
+
+        # =================================================
+        # MAP STEP
+        # =================================================
         elif step["type"] == "map":
 
-            input_data = context.get(step["input"], [])
+            input_data = context.get(
+                step["input"],
+                []
+            )
 
+            # ===== NORMALIZATION =====
+            input_data = normalize_destinations_list(
+                input_data
+            )
+
+            # ===== VALIDATION =====
             if not isinstance(input_data, list):
+
                 return {
                     "status": "error",
                     "error": {
@@ -153,25 +275,32 @@ def execute_plan(plan):
 
             output = {}
 
+            # =============================================
+            # MAP ITERATION
+            # =============================================
             for item in input_data:
 
-                # FIX 1: obtener ciudad correctamente
-                if isinstance(item, dict) and "city" in item:
-                    destination_value = item["city"]
-                    key = item.get("name") or item["city"]
-                else:
-                    destination_value = item
-                    key = item
+                destination_value = item["city"]
+
+                key = item["id"]
 
                 args = {
-                    k: (destination_value if v == "item" else v)
+                    k: (
+                        destination_value
+                        if v == "item"
+                        else v
+                    )
                     for k, v in step["arg_map"].items()
                 }
 
                 metrics["tool_calls"] += 1
 
-                result = execute_tool(step["tool"], args)
+                result = execute_tool(
+                    step["tool"],
+                    args
+                )
 
+                # ===== SUCCESS =====
                 if result["status"] == "success":
 
                     data = result.get("data")
@@ -190,9 +319,14 @@ def execute_plan(plan):
                     else:
                         output[key] = data
 
+                # ===== ERROR =====
                 else:
+
                     metrics["tool_errors"] += 1
-                    metrics["error_types"].append(result["error"]["type"])
+
+                    metrics["error_types"].append(
+                        result["error"]["type"]
+                    )
 
                     output[key] = {
                         "error": result["error"]
@@ -200,7 +334,11 @@ def execute_plan(plan):
 
             context[step["save_as"]] = output
 
+        # =================================================
+        # UNKNOWN STEP
+        # =================================================
         else:
+
             return {
                 "status": "error",
                 "error": {
@@ -211,22 +349,68 @@ def execute_plan(plan):
                 "metrics": metrics
             }
 
-    # ===== NORMALIZATION FINAL =====
+    # =====================================================
+    # FINAL NORMALIZATION
+    # =====================================================
     final_weather = {}
     final_info = {}
     final_destinations = []
 
     for key, value in context.items():
 
-        if key.startswith("weather_") and isinstance(value, dict):
-            final_weather.update(value)
+        # ===== WEATHER =====
+        if key.startswith("weather_"):
 
-        elif key.startswith("info_") and isinstance(value, dict):
-            final_info.update(value)
+            if (
+                isinstance(value, dict)
+                and "destination" in value
+                and "weather" in value
+            ):
 
-        elif key.startswith("destinations_") and isinstance(value, list):
+                normalized = normalize_destination(
+                    value["destination"]
+                )
+
+                final_weather[
+                    normalized["id"]
+                ] = value["weather"]
+
+            elif isinstance(value, dict):
+
+                final_weather.update(value)
+
+        # ===== INFO =====
+        elif key.startswith("info_"):
+
+            if (
+                isinstance(value, dict)
+                and "destination" in value
+                and "info" in value
+            ):
+
+                normalized = normalize_destination(
+                    value["destination"]
+                )
+
+                final_info[
+                    normalized["id"]
+                ] = value["info"]
+
+            elif isinstance(value, dict):
+
+                final_info.update(value)
+
+        # ===== DESTINATIONS =====
+        elif (
+            key.startswith("destinations_")
+            and isinstance(value, list)
+        ):
+
             final_destinations.extend(value)
 
+    # =====================================================
+    # FINAL RESPONSE
+    # =====================================================
     final_data = {}
 
     if final_destinations:

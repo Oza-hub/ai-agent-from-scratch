@@ -1,6 +1,7 @@
 import os
 import requests
 from dotenv import load_dotenv
+from core.entity_resolver import resolve_destination
 
 
 load_dotenv()
@@ -39,14 +40,18 @@ def build_error(error_type, message, code=None, retryable=False):
 # ===== MAIN TOOL =====
 def get_weather(destination: str):
 
-    print(f"[WEATHER API] calling real API for: {destination}")
-
     # ===== VALIDACIÓN =====
     if not destination:
         return build_error("INPUT_ERROR", "missing destination")
 
     if not API_KEY:
         return build_error("CONFIG_ERROR", "missing_api_key")
+
+    # ===== DESAMBIGUACIÓN =====
+    original_destination = destination
+    destination = resolve_destination(destination)
+
+    print(f"[WEATHER API] calling real API for: {destination} (original: {original_destination})")
 
     try:
         url = "https://api.openweathermap.org/data/2.5/weather"
@@ -116,7 +121,8 @@ def get_weather(destination: str):
             )
 
         return build_success({
-            "destination": destination,
+            # 🔥 devolvemos el nombre original para UX limpio
+            "destination": original_destination,
             "weather": f"{weather_desc}, {temp}°C"
         })
 
